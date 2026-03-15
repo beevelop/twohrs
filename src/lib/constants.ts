@@ -34,6 +34,9 @@ export const PUBLIC_ROUTES = [
   "/about",
   "/auth",
   "/post",
+  "/impressum",
+  "/datenschutz",
+  "/agb",
 ];
 
 export const ALWAYS_ACCESSIBLE_ROUTES = [
@@ -44,6 +47,9 @@ export const ALWAYS_ACCESSIBLE_ROUTES = [
   "/account",
   "/leaderboard/history",
   "/leaderboard/top-posts",
+  "/impressum",
+  "/datenschutz",
+  "/agb",
 ];
 
 export const TIME_GATED_ROUTES = ["/feed", "/create", "/leaderboard", "/search"];
