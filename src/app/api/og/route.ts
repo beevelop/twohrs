@@ -1,8 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
-import dns from "dns/promises";
+import dns from "node:dns/promises";
+import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { BlockList, isIP } from "node:net";
+import { createBrotliDecompress, createUnzip } from "node:zlib";
 import { createClient } from "@/lib/supabase/server";
 
 const MAX_HTML_BYTES = 100_000; // Only read first 100KB (OG tags are in <head>)
+const REQUEST_TIMEOUT_MS = 8_000;
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+type ResolvedAddress = {
+  address: string;
+  family: 4 | 6;
+};
+
+const DISALLOWED_IPS = new BlockList();
+
+// IPv4 private, loopback, link-local, carrier-grade NAT, multicast, and other
+// non-public ranges that should never be reachable from this route.
+DISALLOWED_IPS.addSubnet("0.0.0.0", 8, "ipv4");
+DISALLOWED_IPS.addSubnet("10.0.0.0", 8, "ipv4");
+DISALLOWED_IPS.addSubnet("100.64.0.0", 10, "ipv4");
+DISALLOWED_IPS.addSubnet("127.0.0.0", 8, "ipv4");
+DISALLOWED_IPS.addSubnet("169.254.0.0", 16, "ipv4");
+DISALLOWED_IPS.addSubnet("172.16.0.0", 12, "ipv4");
+DISALLOWED_IPS.addSubnet("192.0.0.0", 24, "ipv4");
+DISALLOWED_IPS.addSubnet("192.0.2.0", 24, "ipv4");
+DISALLOWED_IPS.addSubnet("192.168.0.0", 16, "ipv4");
+DISALLOWED_IPS.addSubnet("198.18.0.0", 15, "ipv4");
+DISALLOWED_IPS.addSubnet("198.51.100.0", 24, "ipv4");
+DISALLOWED_IPS.addSubnet("203.0.113.0", 24, "ipv4");
+DISALLOWED_IPS.addSubnet("224.0.0.0", 4, "ipv4");
+DISALLOWED_IPS.addSubnet("240.0.0.0", 4, "ipv4");
+DISALLOWED_IPS.addSubnet("::", 128, "ipv6");
+DISALLOWED_IPS.addSubnet("::1", 128, "ipv6");
+DISALLOWED_IPS.addSubnet("100::", 64, "ipv6");
+DISALLOWED_IPS.addSubnet("2001:2::", 48, "ipv6");
+DISALLOWED_IPS.addSubnet("2001:db8::", 32, "ipv6");
+DISALLOWED_IPS.addSubnet("fc00::", 7, "ipv6");
+DISALLOWED_IPS.addSubnet("fe80::", 10, "ipv6");
+DISALLOWED_IPS.addSubnet("ff00::", 8, "ipv6");
 
 /** Pick a User-Agent that the target site recognises as a known crawler. */
 function getUserAgentForDomain(hostname: string): string {
@@ -32,33 +72,168 @@ function resolveImageUrl(src: string, pageUrl: URL): string {
   return src;
 }
 
-function isPrivateIP(ip: string): boolean {
-  // IPv4 loopback and unspecified
-  if (ip === "127.0.0.1" || ip === "0.0.0.0") return true;
-  // IPv6 loopback and unspecified
-  if (ip === "::1" || ip === "::") return true;
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^\[(.*)\]$/, "$1");
+}
 
-  // IPv4 private ranges
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4) {
-    // 10.0.0.0/8
-    if (parts[0] === 10) return true;
-    // 172.16.0.0/12
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-    // 192.168.0.0/16
-    if (parts[0] === 192 && parts[1] === 168) return true;
-    // 169.254.0.0/16 (link-local)
-    if (parts[0] === 169 && parts[1] === 254) return true;
+function extractIpv4FromMappedIpv6(ip: string): string | null {
+  const normalized = normalizeHostname(ip).toLowerCase();
+  const prefix = "::ffff:";
+  if (!normalized.startsWith(prefix)) return null;
+
+  const mappedPart = normalized.slice(prefix.length);
+  if (mappedPart.includes(".")) {
+    return isIP(mappedPart) === 4 ? mappedPart : null;
   }
 
-  // IPv6 private ranges
-  const lowerIp = ip.toLowerCase();
-  // Link-local
-  if (lowerIp.startsWith("fe80")) return true;
-  // Unique local
-  if (lowerIp.startsWith("fc00") || lowerIp.startsWith("fd")) return true;
+  const segments = mappedPart.split(":").filter(Boolean);
+  if (segments.length !== 2) return null;
 
-  return false;
+  const numbers = segments.map((segment) => Number.parseInt(segment, 16));
+  if (numbers.some((segment) => Number.isNaN(segment) || segment < 0 || segment > 0xffff)) {
+    return null;
+  }
+
+  return [
+    numbers[0] >> 8,
+    numbers[0] & 0xff,
+    numbers[1] >> 8,
+    numbers[1] & 0xff,
+  ].join(".");
+}
+
+function isDisallowedIPAddress(ip: string): boolean {
+  const normalized = normalizeHostname(ip);
+  const mappedIpv4 = extractIpv4FromMappedIpv6(normalized);
+  if (mappedIpv4) return isDisallowedIPAddress(mappedIpv4);
+
+  const family = isIP(normalized);
+  if (family === 0) return true;
+
+  return DISALLOWED_IPS.check(normalized, family === 4 ? "ipv4" : "ipv6");
+}
+
+async function resolvePublicAddress(hostname: string): Promise<ResolvedAddress> {
+  const normalizedHostname = normalizeHostname(hostname);
+  const literalFamily = isIP(normalizedHostname);
+
+  if (literalFamily) {
+    if (isDisallowedIPAddress(normalizedHostname)) {
+      throw new Error("Internal URLs not allowed");
+    }
+
+    return { address: normalizedHostname, family: literalFamily as 4 | 6 };
+  }
+
+  let addresses;
+  try {
+    addresses = await dns.lookup(normalizedHostname, {
+      all: true,
+      verbatim: true,
+    });
+  } catch {
+    throw new Error("DNS resolution failed");
+  }
+
+  if (addresses.length === 0) {
+    throw new Error("DNS resolution failed");
+  }
+
+  if (addresses.some(({ address }) => isDisallowedIPAddress(address))) {
+    throw new Error("Internal URLs not allowed");
+  }
+
+  const preferredAddress = addresses.find(({ family }) => family === 4) ?? addresses[0];
+  return {
+    address: preferredAddress.address,
+    family: preferredAddress.family as 4 | 6,
+  };
+}
+
+function getHeaderValue(headers: IncomingHttpHeaders, key: string): string | null {
+  const value = headers[key];
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value[0] ?? null;
+  return null;
+}
+
+function getRemainingTime(deadline: number): number {
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) {
+    throw new Error("Request timed out");
+  }
+  return remaining;
+}
+
+async function performPinnedRequest(url: URL, deadline: number): Promise<IncomingMessage> {
+  const hostname = normalizeHostname(url.hostname);
+  const resolved = await resolvePublicAddress(hostname);
+  const request = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const timeoutMs = getRemainingTime(deadline);
+
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        protocol: url.protocol,
+        hostname,
+        port: url.port || undefined,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          "User-Agent": getUserAgentForDomain(hostname),
+          "Accept": "text/html",
+          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+          "Accept-Encoding": "gzip, deflate, br",
+          "Host": url.host,
+        },
+        lookup: (_lookupHostname, _options, callback) => {
+          callback(null, resolved.address, resolved.family);
+        },
+        servername: url.protocol === "https:" && !isIP(hostname) ? hostname : undefined,
+      },
+      (response) => resolve(response)
+    );
+
+    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("Request timed out"));
+    });
+    req.end();
+  });
+}
+
+async function fetchUrlWithRedirects(initialUrl: URL): Promise<{ finalUrl: URL; response: IncomingMessage }> {
+  const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+  let currentUrl = new URL(initialUrl.toString());
+
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+    const response = await performPinnedRequest(currentUrl, deadline);
+    const statusCode = response.statusCode ?? 0;
+
+    if (!REDIRECT_STATUS_CODES.has(statusCode)) {
+      return { finalUrl: currentUrl, response };
+    }
+
+    const location = getHeaderValue(response.headers, "location");
+    response.resume();
+
+    if (!location) {
+      throw new Error("Redirect response missing location header");
+    }
+
+    if (redirectCount === MAX_REDIRECTS) {
+      throw new Error("Too many redirects");
+    }
+
+    const nextUrl = new URL(location, currentUrl);
+    if (!["http:", "https:"].includes(nextUrl.protocol)) {
+      throw new Error("Only HTTP(S) redirects allowed");
+    }
+
+    currentUrl = nextUrl;
+  }
+
+  throw new Error("Too many redirects");
 }
 
 export async function GET(request: NextRequest) {
@@ -94,46 +269,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Domain blocked" }, { status: 403 });
   }
 
-  // Block private/internal IPs (SSRF protection)
   try {
-    const { address } = await dns.lookup(parsedUrl.hostname);
-    if (isPrivateIP(address)) {
-      return NextResponse.json({ error: "Internal URLs not allowed" }, { status: 400 });
-    }
-  } catch {
-    return NextResponse.json({ error: "DNS resolution failed" }, { status: 400 });
-  }
+    const { finalUrl, response } = await fetchUrlWithRedirects(parsedUrl);
+    const statusCode = response.statusCode ?? 0;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-
-    const response = await fetch(parsedUrl.toString(), {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": getUserAgentForDomain(parsedUrl.hostname),
-        "Accept": "text/html",
-        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-      },
-    });
-
-    if (!response.ok) {
-      clearTimeout(timeout);
+    if (statusCode < 200 || statusCode >= 300) {
+      response.resume();
       // Fall back to URL-based preview for sites that block cloud IPs
       const fallback = buildFallbackFromUrl(parsedUrl);
       if (fallback) return NextResponse.json(fallback);
       return NextResponse.json({ error: "Failed to fetch URL" }, { status: 502 });
     }
 
-    const contentType = response.headers.get("content-type") || "";
+    const contentType = getHeaderValue(response.headers, "content-type") || "";
     if (!contentType.includes("text/html")) {
-      clearTimeout(timeout);
+      response.resume();
       return NextResponse.json({ error: "URL is not an HTML page" }, { status: 400 });
     }
 
     // Only read first 100KB — OG tags are always in <head>
     const html = await readPartialBody(response, MAX_HTML_BYTES);
-    clearTimeout(timeout);
 
     // Extract from og:* and twitter:* tags (the "real" OG data)
     const metaTitle =
@@ -146,8 +301,8 @@ export async function GET(request: NextRequest) {
       extractMetaContent(html, "og:image") ||
       extractMetaContent(html, "twitter:image") ||
       extractMetaContent(html, "twitter:image:src");
-    const ogImage = rawImage ? resolveImageUrl(rawImage, parsedUrl) : null;
-    const ogUrl = extractMetaContent(html, "og:url") || parsedUrl.toString();
+    const ogImage = rawImage ? resolveImageUrl(rawImage, finalUrl) : null;
+    const ogUrl = extractMetaContent(html, "og:url") || finalUrl.toString();
     // Generic <meta name="description"> is only used as a last-resort supplement,
     // not as a signal that the page has real OG data.
     const fallbackDescription = extractMetaContent(html, "description");
@@ -173,7 +328,21 @@ export async function GET(request: NextRequest) {
       image: ogImage || null,
       url: ogUrl,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.message === "Internal URLs not allowed") {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+
+      if (
+        error.message === "DNS resolution failed" ||
+        error.message === "Only HTTP(S) redirects allowed" ||
+        error.message === "Redirect response missing location header"
+      ) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
+    }
+
     // On timeout / network error, still try URL-based fallback
     const fallback = buildFallbackFromUrl(parsedUrl);
     if (fallback) return NextResponse.json(fallback);
@@ -181,21 +350,40 @@ export async function GET(request: NextRequest) {
   }
 }
 
-async function readPartialBody(response: Response, maxBytes: number): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return "";
-
+async function readPartialBody(response: IncomingMessage, maxBytes: number): Promise<string> {
+  const encoding = (getHeaderValue(response.headers, "content-encoding") || "").toLowerCase();
+  const stream =
+    encoding.includes("br")
+      ? response.pipe(createBrotliDecompress())
+      : encoding.includes("gzip") || encoding.includes("deflate")
+        ? response.pipe(createUnzip())
+        : response;
   const decoder = new TextDecoder();
+  let bytesRead = 0;
   let result = "";
 
-  while (result.length < maxBytes) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    result += decoder.decode(value, { stream: true });
+  try {
+    for await (const chunk of stream) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = maxBytes - bytesRead;
+      if (remaining <= 0) break;
+
+      const slice = buffer.subarray(0, remaining);
+      result += decoder.decode(slice, { stream: true });
+      bytesRead += slice.length;
+
+      if (bytesRead >= maxBytes) {
+        break;
+      }
+    }
+  } finally {
+    if (stream !== response) {
+      stream.destroy();
+    }
+    response.destroy();
   }
 
-  reader.cancel();
-  return result.slice(0, maxBytes);
+  return result + decoder.decode();
 }
 
 function extractMetaContent(html: string, property: string): string | null {
