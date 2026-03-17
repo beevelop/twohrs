@@ -3,6 +3,8 @@ import "server-only";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import bundledDisposableDomains from "@/lib/data/disposable-email-domains.json";
+
 let disposableDomainSet: Set<string> | null = null;
 let cachedExtraDomains = "";
 let cachedFileDomainsSignature = "";
@@ -44,10 +46,12 @@ function addDomains(target: Set<string>, domainsToAdd: Iterable<string>): void {
 }
 
 function buildDisposableDomainSet(
+  bundledDomains: string[],
   fileDomains: string[],
   extraDomains: string
 ): Set<string> {
   const domains = new Set<string>();
+  addDomains(domains, bundledDomains);
   addDomains(domains, fileDomains);
   addDomains(domains, extraDomains.split(","));
 
@@ -64,7 +68,11 @@ function getDisposableDomainSet(): Set<string> {
     cachedExtraDomains !== extraDomains ||
     cachedFileDomainsSignature !== fileDomainsSignature
   ) {
-    disposableDomainSet = buildDisposableDomainSet(fileDomains, extraDomains);
+    disposableDomainSet = buildDisposableDomainSet(
+      bundledDisposableDomains,
+      fileDomains,
+      extraDomains
+    );
     cachedExtraDomains = extraDomains;
     cachedFileDomainsSignature = fileDomainsSignature;
   }

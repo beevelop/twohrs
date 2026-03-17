@@ -38,8 +38,7 @@ export default function AboutPage() {
 
           <p>
             Und um Mitternacht wird alles gelöscht. Jeder Post, jeder Upvote,
-            jedes Bild. Morgen ist ein neuer Tag. Kein Content-Archiv, kein
-            &ldquo;Memories&rdquo;-Feature, kein digitaler Ballast.
+            jedes Bild. Morgen ist ein neuer Tag.
           </p>
 
           <p>

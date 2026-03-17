@@ -227,7 +227,8 @@ Copy `.env.example` to `.env` and fill in:
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Supabase anon (public) key
 - `SUPABASE_SERVICE_ROLE_KEY` — Supabase service role key (secret, for admin/cron operations)
 - `CRON_SECRET` — Random secret for authenticating cron job endpoints
-- `BLOCKED_EMAIL_DOMAINS` — (optional) Additional comma-separated email domains to block at signup; keep the concrete list outside git, e.g. in local env vars or `config/disposable-email-domains.local.json`
+- `BLOCKED_EMAIL_DOMAINS` — (optional) Additional comma-separated email domains to block at signup on top of the private bundled disposable-domain list; keep project-specific overrides outside git, e.g. in local env vars or `config/disposable-email-domains.local.json`
+- `src/lib/data/disposable-email-domains.json` — private local-only base list for disposable domains; never commit it
 - `NEXT_PUBLIC_OPEN_HOUR` — (optional) Override app open hour (default: 20)
 - `NEXT_PUBLIC_CLOSE_HOUR` — (optional) Override app close hour (default: 22)
 
@@ -507,6 +508,13 @@ vercel alias <preview-url-from-output> socialnetwork-dev.vercel.app
 # Deploy to Production
 vercel --yes --prod
 # → Automatically aliases to twohrs.com
+```
+
+If production depends on the private `src/lib/data/disposable-email-domains.json` file, deploy from the local machine that has the file using a prebuilt deploy so the file does not need to be committed:
+
+```bash
+vercel build --prod
+vercel deploy --prebuilt --prod --yes
 ```
 
 ### Environment Variables per Environment
