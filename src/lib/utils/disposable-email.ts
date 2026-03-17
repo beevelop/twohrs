@@ -3,11 +3,18 @@ import "server-only";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import bundledDisposableDomains from "@/lib/data/disposable-email-domains.json";
-
 let disposableDomainSet: Set<string> | null = null;
 let cachedExtraDomains = "";
+let cachedBundledDomainsSignature = "";
 let cachedFileDomainsSignature = "";
+
+const BUNDLED_DISPOSABLE_DOMAINS_PATH = join(
+  process.cwd(),
+  "src",
+  "lib",
+  "data",
+  "disposable-email-domains.json"
+);
 
 const LOCAL_DISPOSABLE_DOMAINS_PATH = join(
   process.cwd(),
@@ -17,6 +24,23 @@ const LOCAL_DISPOSABLE_DOMAINS_PATH = join(
 
 function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/^@+/, "").replace(/\.+$/, "");
+}
+
+function readBundledDisposableDomains(): string[] {
+  if (!existsSync(BUNDLED_DISPOSABLE_DOMAINS_PATH)) {
+    return [];
+  }
+
+  try {
+    const raw = readFileSync(BUNDLED_DISPOSABLE_DOMAINS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch (error) {
+    console.error("Failed to read bundled disposable email domains:", error);
+    return [];
+  }
 }
 
 function readLocalDisposableDomains(): string[] {
@@ -60,20 +84,24 @@ function buildDisposableDomainSet(
 
 function getDisposableDomainSet(): Set<string> {
   const extraDomains = process.env.BLOCKED_EMAIL_DOMAINS ?? "";
+  const bundledDomains = readBundledDisposableDomains();
   const fileDomains = readLocalDisposableDomains();
+  const bundledDomainsSignature = JSON.stringify(bundledDomains);
   const fileDomainsSignature = JSON.stringify(fileDomains);
 
   if (
     !disposableDomainSet ||
     cachedExtraDomains !== extraDomains ||
+    cachedBundledDomainsSignature !== bundledDomainsSignature ||
     cachedFileDomainsSignature !== fileDomainsSignature
   ) {
     disposableDomainSet = buildDisposableDomainSet(
-      bundledDisposableDomains,
+      bundledDomains,
       fileDomains,
       extraDomains
     );
     cachedExtraDomains = extraDomains;
+    cachedBundledDomainsSignature = bundledDomainsSignature;
     cachedFileDomainsSignature = fileDomainsSignature;
   }
 

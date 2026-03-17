@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  outputFileTracingIncludes: {
+    "/*": ["./src/lib/data/disposable-email-domains.json"],
+  },
   async headers() {
     return [
       {
