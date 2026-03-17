@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
-import { getPrivateProfileById } from "@/lib/queries/private-profile";
+import { createAdminClient } from "@/lib/supabase/admin";
 import type { PostWithAuthor } from "@/lib/types";
+import { POST_WITH_AUTHOR_SELECT } from "@/lib/queries/posts";
 
 export async function getMentionedPosts(
   userId: string
@@ -10,8 +11,13 @@ export async function getMentionedPosts(
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  const admin = createAdminClient();
 
-  const profile = await getPrivateProfileById(userId);
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("last_mentions_seen_at")
+    .eq("id", userId)
+    .single();
 
   const lastSeen = profile?.last_mentions_seen_at ?? new Date().toISOString();
 
@@ -43,12 +49,7 @@ export async function getMentionedPosts(
   // Fetch full posts with author profiles
   const { data: posts } = await supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .in("id", orderedPostIds);
 
   if (!posts) return { posts: [], unreadPostIds: [] };
@@ -99,8 +100,13 @@ export async function getMentionedPosts(
 
 export async function getUnreadMentionCount(userId: string): Promise<number> {
   const supabase = await createClient();
+  const admin = createAdminClient();
 
-  const profile = await getPrivateProfileById(userId);
+  const { data: profile } = await admin
+    .from("profiles")
+    .select("last_mentions_seen_at")
+    .eq("id", userId)
+    .single();
 
   if (!profile) return 0;
 

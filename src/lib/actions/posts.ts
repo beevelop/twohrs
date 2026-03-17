@@ -12,6 +12,15 @@ import { detectImageMime, getExtensionFromMime } from "@/lib/utils/magic-bytes";
 import { uuidSchema } from "@/lib/validations";
 import type { ActionResult } from "@/lib/types";
 
+function isOwnedStoragePath(path: string, userId: string): boolean {
+  const normalizedPath = path.replace(/^\/+/, "");
+  return (
+    normalizedPath.startsWith(`${userId}/`) &&
+    !normalizedPath.includes("..") &&
+    !normalizedPath.includes("\\")
+  );
+}
+
 export async function createPost(formData: FormData): Promise<ActionResult> {
   // Time-gate check (Server Action layer)
   if (!isAppOpen()) {
@@ -63,28 +72,15 @@ export async function createPost(formData: FormData): Promise<ActionResult> {
     };
   }
 
-  // Check caption for blocked domains before upload
-  if (caption) {
-    const { findBlockedDomainInText } = await import("@/lib/moderation/blocked-domains");
-    const blockedDomain = findBlockedDomainInText(caption);
-    if (blockedDomain) {
-      const { addModerationStrike } = await import("@/lib/moderation/strikes");
-      const { accountDeleted } = await addModerationStrike(user.id);
-      if (accountDeleted) {
-        return { success: false, error: "Dein Account wurde gesperrt." };
-      }
-      return { success: false, error: "Dieser Link ist nicht erlaubt." };
-    }
-  }
-
   let publicUrl: string | null = null;
   let fileName: string | null = null;
+  let cleanBuffer: Buffer | null = null;
+  let detectedMime: string | null = null;
 
-  // Upload image if present
+  // Validate and sanitize image locally before moderation/upload.
   if (hasImage) {
-    // Server-side magic-byte validation
     const imageBuffer = await imageFile.arrayBuffer();
-    const detectedMime = detectImageMime(imageBuffer);
+    detectedMime = detectImageMime(imageBuffer);
     if (!detectedMime) {
       return { success: false, error: "Ungültiger Dateityp. Nur JPEG, PNG, GIF und WebP erlaubt." };
     }
@@ -94,9 +90,32 @@ export async function createPost(formData: FormData): Promise<ActionResult> {
 
     // Strip EXIF metadata (GPS, camera info) before upload
     const { stripExifMetadata } = await import("@/lib/utils/strip-exif");
-    const rawBuffer = Buffer.from(await imageFile.arrayBuffer());
-    const cleanBuffer = await stripExifMetadata(rawBuffer, imageFile.type);
+    cleanBuffer = await stripExifMetadata(Buffer.from(imageBuffer), detectedMime);
+  }
 
+  const { checkPostContent } = await import("@/lib/moderation/check-content");
+  const contentCheck = await checkPostContent(cleanBuffer, caption);
+
+  if (!contentCheck.allowed) {
+    const { addModerationStrike } = await import("@/lib/moderation/strikes");
+    const strikeOptions = contentCheck.type === "nsfw_image"
+      ? { column: "nsfw_strikes" as const }
+      : undefined;
+    const { accountDeleted } = await addModerationStrike(user.id, strikeOptions);
+
+    if (accountDeleted) {
+      return { success: false, error: "Dein Account wurde gesperrt." };
+    }
+
+    return {
+      success: false,
+      error: contentCheck.type === "blocked_domain"
+        ? "Dieser Link ist nicht erlaubt."
+        : "Dieses Bild verstößt gegen unsere Richtlinien.",
+    };
+  }
+
+  if (cleanBuffer && fileName && detectedMime) {
     const { error: uploadError } = await supabase.storage
       .from("memes")
       .upload(fileName, cleanBuffer, {
@@ -111,37 +130,6 @@ export async function createPost(formData: FormData): Promise<ActionResult> {
     }
 
     publicUrl = supabase.storage.from("memes").getPublicUrl(fileName).data.publicUrl;
-  }
-
-  // NSFW image check (after upload, before DB insert)
-  if (publicUrl) {
-    try {
-      const { classifyImage } = await import("@/lib/moderation/nsfw");
-      const response = await fetch(publicUrl);
-      if (response.ok) {
-        const buffer = Buffer.from(await response.arrayBuffer());
-        const result = await classifyImage(buffer);
-        if (result.isNsfw) {
-          // Delete uploaded image
-          if (fileName) {
-            await supabase.storage.from("memes").remove([fileName]);
-          }
-          const { addModerationStrike } = await import("@/lib/moderation/strikes");
-          const { accountDeleted } = await addModerationStrike(user.id, { column: "nsfw_strikes" });
-          if (accountDeleted) {
-            return { success: false, error: "Dein Account wurde gesperrt." };
-          }
-          return { success: false, error: "Dieses Bild verstößt gegen unsere Richtlinien." };
-        }
-      }
-    } catch {
-      // Fail-closed: if NSFW check fails, reject the post and clean up
-      console.error("NSFW check failed in createPost, rejecting as safety fallback");
-      if (fileName) {
-        await supabase.storage.from("memes").remove([fileName]);
-      }
-      return { success: false, error: "Bild konnte nicht überprüft werden. Bitte versuche es erneut." };
-    }
   }
 
   // Create post in database
@@ -203,7 +191,6 @@ export async function createPost(formData: FormData): Promise<ActionResult> {
 }
 
 export async function createPostRecord(
-  imageUrl: string | null,
   imagePath: string | null,
   caption: string | null,
   ogData?: { ogTitle?: string; ogDescription?: string; ogImage?: string; ogUrl?: string }
@@ -213,7 +200,7 @@ export async function createPostRecord(
   }
 
   // At least caption or image required
-  if (!imageUrl && !caption?.trim()) {
+  if (!imagePath && !caption?.trim()) {
     return { success: false, error: "Mindestens ein Bild oder Text ist erforderlich" };
   }
 
@@ -252,15 +239,44 @@ export async function createPostRecord(
     };
   }
 
-  // Content moderation checks (domain blacklist + NSFW image)
+  let ownedImagePath: string | null = null;
+  let imageBuffer: Buffer | null = null;
+  let publicUrl: string | null = null;
+
+  if (imagePath) {
+    const normalizedImagePath = imagePath.replace(/^\/+/, "");
+    if (!isOwnedStoragePath(normalizedImagePath, user.id)) {
+      return { success: false, error: "Ungültiger Bildpfad" };
+    }
+
+    ownedImagePath = normalizedImagePath;
+
+    const { data: storedImage, error: downloadError } = await supabase.storage
+      .from("memes")
+      .download(ownedImagePath);
+
+    if (downloadError || !storedImage) {
+      console.error("Stored image download failed:", downloadError?.message);
+      return { success: false, error: "Bild konnte nicht geladen werden" };
+    }
+
+    const storedArrayBuffer = await storedImage.arrayBuffer();
+    imageBuffer = Buffer.from(storedArrayBuffer);
+
+    if (!detectImageMime(storedArrayBuffer)) {
+      await supabase.storage.from("memes").remove([ownedImagePath]);
+      return { success: false, error: "Ungültiger Dateityp. Nur JPEG, PNG, GIF und WebP erlaubt." };
+    }
+
+    publicUrl = supabase.storage.from("memes").getPublicUrl(ownedImagePath).data.publicUrl;
+  }
+
   const { checkPostContent } = await import("@/lib/moderation/check-content");
-  const contentCheck = await checkPostContent(imageUrl, caption);
+  const contentCheck = await checkPostContent(imageBuffer, caption);
 
   if (!contentCheck.allowed) {
-    // Delete the already-uploaded image from storage
-    if (imagePath) {
-      const adminClient = createAdminClient();
-      await adminClient.storage.from("memes").remove([imagePath]);
+    if (ownedImagePath) {
+      await supabase.storage.from("memes").remove([ownedImagePath]);
     }
 
     // Add strike: domain violations use admin strikes (3), NSFW uses separate counter (100)
@@ -286,8 +302,8 @@ export async function createPostRecord(
     .from("posts")
     .insert({
       user_id: user.id,
-      image_url: imageUrl,
-      image_path: imagePath,
+      image_url: publicUrl,
+      image_path: ownedImagePath,
       caption,
       og_title: ogData?.ogTitle || null,
       og_description: ogData?.ogDescription || null,
@@ -299,8 +315,8 @@ export async function createPostRecord(
 
   if (insertError || !newPost) {
     console.error("Post insert failed:", insertError?.message);
-    if (imagePath) {
-      await supabase.storage.from("memes").remove([imagePath]);
+    if (ownedImagePath) {
+      await supabase.storage.from("memes").remove([ownedImagePath]);
     }
     return { success: false, error: "Post konnte nicht erstellt werden" };
   }

@@ -11,7 +11,7 @@ export function useUserCount() {
 
     supabase
       .from("profiles")
-      .select("*", { count: "exact", head: true })
+      .select("id", { count: "exact", head: true })
       .then(({ count }) => {
         if (count !== null) setCount(count);
       });

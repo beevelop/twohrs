@@ -12,7 +12,7 @@ export type ContentCheckResult = {
  * Called before post creation in server actions.
  */
 export async function checkPostContent(
-  imageUrl: string | null,
+  imageBuffer: Buffer | null,
   caption: string | null
 ): Promise<ContentCheckResult> {
   // 1. Check caption for blocked domains
@@ -28,20 +28,15 @@ export async function checkPostContent(
   }
 
   // 2. Check image for NSFW content (only if there's an image)
-  if (imageUrl) {
+  if (imageBuffer) {
     try {
-      const response = await fetch(imageUrl);
-      if (response.ok) {
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const result = await classifyImage(buffer);
-        if (result.isNsfw) {
-          return {
-            allowed: false,
-            reason: "Unzulässiger Bildinhalt erkannt",
-            type: "nsfw_image",
-          };
-        }
+      const result = await classifyImage(imageBuffer);
+      if (result.isNsfw) {
+        return {
+          allowed: false,
+          reason: "Unzulässiger Bildinhalt erkannt",
+          type: "nsfw_image",
+        };
       }
     } catch {
       // Fail-closed: if NSFW check fails, reject the post

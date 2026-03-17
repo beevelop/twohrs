@@ -109,7 +109,6 @@ export function CreatePostForm() {
     setUploadProgress(0);
 
     try {
-      let imageUrl: string | null = null;
       let imagePath: string | null = null;
 
       // Upload image if present
@@ -118,13 +117,11 @@ export function CreatePostForm() {
           image,
           setUploadProgress
         );
-        imageUrl = uploaded.imageUrl;
         imagePath = uploaded.imagePath;
       }
 
       // Create post record in database
       const result = await createPostRecord(
-        imageUrl,
         imagePath,
         caption || null,
         ogData

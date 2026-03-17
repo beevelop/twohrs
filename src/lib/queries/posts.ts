@@ -3,6 +3,22 @@ import { FEED_PAGE_SIZE, HOT_MIN_UPVOTES } from "@/lib/constants";
 import type { FeedTab } from "@/lib/constants";
 import type { PostWithAuthor, FeedPage } from "@/lib/types";
 
+export const POST_WITH_AUTHOR_SELECT = `
+  id,
+  user_id,
+  image_url,
+  image_path,
+  caption,
+  upvote_count,
+  comment_count,
+  created_at,
+  og_title,
+  og_description,
+  og_image,
+  og_url,
+  profiles!posts_user_id_fkey (username, display_name, avatar_url)
+`;
+
 export async function getFeed(cursor?: string): Promise<FeedPage> {
   const supabase = await createClient();
 
@@ -12,12 +28,7 @@ export async function getFeed(cursor?: string): Promise<FeedPage> {
 
   let query = supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .order("created_at", { ascending: false })
     .limit(FEED_PAGE_SIZE + 1);
 
@@ -86,12 +97,7 @@ export async function getPostsByUser(userId: string): Promise<PostWithAuthor[]> 
 
   const { data: posts } = await supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
@@ -175,12 +181,7 @@ export async function getFeedFollowing(cursor?: string): Promise<FeedPage> {
 
   let query = supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .order("created_at", { ascending: false })
     .limit(FEED_PAGE_SIZE + 1);
 
@@ -264,12 +265,7 @@ export async function getFeedByHashtag(
   // Fetch posts sorted by upvotes (like hot tab)
   let query = supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .in("id", postIds)
     .order("upvote_count", { ascending: false })
     .order("created_at", { ascending: false })
@@ -379,12 +375,7 @@ export async function getFeedHot(cursor?: string): Promise<FeedPage> {
 
   let query = supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .gte("upvote_count", minUpvotes)
     .order("upvote_count", { ascending: false })
     .order("created_at", { ascending: false })
@@ -465,12 +456,7 @@ export async function getPostById(
 
   const { data: post, error } = await supabase
     .from("posts")
-    .select(
-      `
-      *,
-      profiles!posts_user_id_fkey (username, display_name, avatar_url)
-    `
-    )
+    .select(POST_WITH_AUTHOR_SELECT)
     .eq("id", postId)
     .single();
 

@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/client";
-import { getSupabaseUrl } from "@/lib/supabase/env";
+import { getSupabaseUrl } from "@/lib/supabase/public-env";
 
 export async function uploadImageWithProgress(
   file: File,

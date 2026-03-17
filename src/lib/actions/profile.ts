@@ -8,7 +8,7 @@ import {
 } from "@/lib/validations";
 import { detectImageMime, getExtensionFromMime } from "@/lib/utils/magic-bytes";
 import { MAX_AVATAR_SIZE_BYTES, MAX_AVATAR_SIZE_MB } from "@/lib/constants";
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/supabase/env";
+import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/supabase/public-env";
 import type { ActionResult } from "@/lib/types";
 
 export async function updateProfile(formData: FormData): Promise<ActionResult> {

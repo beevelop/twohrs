@@ -9,6 +9,34 @@ import type {
   TopFollowedProfile,
 } from "@/lib/types";
 
+const ARCHIVED_TOP_POST_SELECT = `
+  id,
+  date,
+  user_id,
+  image_url,
+  image_path,
+  caption,
+  upvote_count,
+  created_at,
+  top_comments,
+  profiles (username, display_name, avatar_url)
+`;
+
+const LIVE_TOP_POST_SELECT = `
+  id,
+  user_id,
+  image_url,
+  image_path,
+  caption,
+  upvote_count,
+  created_at,
+  og_title,
+  og_description,
+  og_image,
+  og_url,
+  profiles (username, display_name, avatar_url)
+`;
+
 export async function getTodayLeaderboard(): Promise<LeaderboardEntry[]> {
   const supabase = await createClient();
 
@@ -105,18 +133,28 @@ export async function getTopPostsAllTime(): Promise<TopPostAllTime[]> {
 
   const { data, error } = await supabase
     .from("top_posts_all_time")
-    .select(
-      `
-      *,
-      profiles (username, display_name, avatar_url)
-    `
-    )
+    .select(ARCHIVED_TOP_POST_SELECT)
     .order("upvote_count", { ascending: false })
     .limit(20);
 
   if (error || !data) return [];
 
-  return data as unknown as TopPostAllTime[];
+  return data.map((post) => ({
+    id: post.id,
+    date: post.date,
+    user_id: post.user_id,
+    image_url: post.image_url,
+    image_path: post.image_path,
+    caption: post.caption,
+    upvote_count: post.upvote_count,
+    created_at: post.created_at,
+    og_title: null,
+    og_description: null,
+    og_image: null,
+    og_url: null,
+    top_comments: (post.top_comments as TopComment[] | null) ?? [],
+    profiles: post.profiles as unknown as TopPostAllTime["profiles"],
+  }));
 }
 
 export async function getTopWinners(): Promise<TopWinner[]> {
@@ -226,13 +264,7 @@ export async function getLatestTopPost(): Promise<TopPostAllTime | null> {
   // First: check if there are live posts (session just ended, not yet cleaned up)
   const { data: livePost } = await supabase
     .from("posts")
-    .select(
-      `
-      id, user_id, image_url, image_path, caption, upvote_count, created_at,
-      og_title, og_description, og_image, og_url,
-      profiles (username, display_name, avatar_url)
-    `
-    )
+    .select(LIVE_TOP_POST_SELECT)
     .order("upvote_count", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -279,17 +311,27 @@ export async function getLatestTopPost(): Promise<TopPostAllTime | null> {
   // Fallback: get from archived top posts
   const { data, error } = await supabase
     .from("top_posts_all_time")
-    .select(
-      `
-      *,
-      profiles (username, display_name, avatar_url)
-    `
-    )
+    .select(ARCHIVED_TOP_POST_SELECT)
     .order("date", { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error || !data) return null;
 
-  return data as unknown as TopPostAllTime;
+  return {
+    id: data.id,
+    date: data.date,
+    user_id: data.user_id,
+    image_url: data.image_url,
+    image_path: data.image_path,
+    caption: data.caption,
+    upvote_count: data.upvote_count,
+    created_at: data.created_at,
+    og_title: null,
+    og_description: null,
+    og_image: null,
+    og_url: null,
+    top_comments: (data.top_comments as TopComment[] | null) ?? [],
+    profiles: data.profiles as unknown as TopPostAllTime["profiles"],
+  };
 }
