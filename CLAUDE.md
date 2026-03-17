@@ -263,6 +263,13 @@ Runs via **pg_cron** (NOT Vercel Cron — `vercel.json` is empty):
 
 Deployment Protection is disabled.
 
+If production depends on the private `src/lib/data/disposable-email-domains.json` file, deploy from the local machine that has the file using a prebuilt deploy so the file does not need to be committed:
+
+```bash
+vercel build --prod
+vercel deploy --prebuilt --prod --yes
+```
+
 ### Environment Variables per Environment
 
 | Variable | Production | Preview |
