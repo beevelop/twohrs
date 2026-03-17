@@ -59,7 +59,7 @@ const CHAR_MAP: Record<string, string> = {
   "\u0252": "a", // ɒ (turned alpha)
   "\u0254": "c", // ɔ (open o, used as turned c)
   "\u025E": "e", // ɞ (closed reversed open e)
-  "\u1D02": "ae",// ᴂ (turned ae)
+  "\u1D02": "ae", // ᴂ (turned ae)
 
   // ── Modifier / Subscript / Superscript letters ────────
   "\u1D43": "a", // ᵃ
