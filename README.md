@@ -179,7 +179,7 @@ supabase/
    CRON_SECRET=any-random-secret
    BLOCKED_EMAIL_DOMAINS=
    ```
-   Optional kannst du statt einer langen Env-Variable auch eine lokale, nicht versionierte Datei unter `config/disposable-email-domains.local.json` anlegen.
+   Das Projekt bringt bereits eine versionierte Basisliste für Wegwerf-Domains mit. `BLOCKED_EMAIL_DOMAINS` ist nur für zusätzliche Domains gedacht. Optional kannst du statt der Env-Variable auch eine lokale, nicht versionierte Datei unter `config/disposable-email-domains.local.json` anlegen.
 
 4. **Run database migrations**
    ```bash

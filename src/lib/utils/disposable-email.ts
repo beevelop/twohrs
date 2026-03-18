@@ -5,7 +5,16 @@ import { join } from "node:path";
 
 let disposableDomainSet: Set<string> | null = null;
 let cachedExtraDomains = "";
+let cachedBundledDomainsSignature = "";
 let cachedFileDomainsSignature = "";
+
+const BUNDLED_DISPOSABLE_DOMAINS_PATH = join(
+  process.cwd(),
+  "src",
+  "lib",
+  "data",
+  "disposable-email-domains.json"
+);
 
 const LOCAL_DISPOSABLE_DOMAINS_PATH = join(
   process.cwd(),
@@ -15,6 +24,23 @@ const LOCAL_DISPOSABLE_DOMAINS_PATH = join(
 
 function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/^@+/, "").replace(/\.+$/, "");
+}
+
+function readBundledDisposableDomains(): string[] {
+  if (!existsSync(BUNDLED_DISPOSABLE_DOMAINS_PATH)) {
+    return [];
+  }
+
+  try {
+    const raw = readFileSync(BUNDLED_DISPOSABLE_DOMAINS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch (error) {
+    console.error("Failed to read bundled disposable email domains:", error);
+    return [];
+  }
 }
 
 function readLocalDisposableDomains(): string[] {
@@ -44,10 +70,12 @@ function addDomains(target: Set<string>, domainsToAdd: Iterable<string>): void {
 }
 
 function buildDisposableDomainSet(
+  bundledDomains: string[],
   fileDomains: string[],
   extraDomains: string
 ): Set<string> {
   const domains = new Set<string>();
+  addDomains(domains, bundledDomains);
   addDomains(domains, fileDomains);
   addDomains(domains, extraDomains.split(","));
 
@@ -56,16 +84,24 @@ function buildDisposableDomainSet(
 
 function getDisposableDomainSet(): Set<string> {
   const extraDomains = process.env.BLOCKED_EMAIL_DOMAINS ?? "";
+  const bundledDomains = readBundledDisposableDomains();
   const fileDomains = readLocalDisposableDomains();
+  const bundledDomainsSignature = JSON.stringify(bundledDomains);
   const fileDomainsSignature = JSON.stringify(fileDomains);
 
   if (
     !disposableDomainSet ||
     cachedExtraDomains !== extraDomains ||
+    cachedBundledDomainsSignature !== bundledDomainsSignature ||
     cachedFileDomainsSignature !== fileDomainsSignature
   ) {
-    disposableDomainSet = buildDisposableDomainSet(fileDomains, extraDomains);
+    disposableDomainSet = buildDisposableDomainSet(
+      bundledDomains,
+      fileDomains,
+      extraDomains
+    );
     cachedExtraDomains = extraDomains;
+    cachedBundledDomainsSignature = bundledDomainsSignature;
     cachedFileDomainsSignature = fileDomainsSignature;
   }
 
