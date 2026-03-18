@@ -157,6 +157,18 @@ describe("normalizeText", () => {
     expect(normalizeText("hello 🎉🔥")).toBe("hello 🎉🔥");
   });
 
+  it("preserves emoji variation selectors", () => {
+    expect(normalizeText("❤️ ♥️")).toBe("❤️ ♥️");
+  });
+
+  it("preserves keycap emoji sequences", () => {
+    expect(normalizeText("1️⃣ *️⃣")).toBe("1️⃣ *️⃣");
+  });
+
+  it("preserves zwj emoji sequences", () => {
+    expect(normalizeText("🏳️‍🌈")).toBe("🏳️‍🌈");
+  });
+
   // ── Mixed content ───────────────────────────────────────────────
 
   it("normalises mixed fancy + normal text", () => {

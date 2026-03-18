@@ -116,6 +116,15 @@ const ALLOWED_COMBINING_MARKS = new Set([
   0x0328, // Combining Ogonek               (ą, ę — Polish)
 ]);
 
+// Combining marks that are valid and commonly used after non-letter bases
+// in emoji/symbol sequences. Keep these so we do not mangle inputs like:
+// ❤️, 1️⃣, *️⃣, 🏳️‍🌈
+const ALLOWED_NON_LETTER_MARKS = new Set([
+  0xFE0E, // Variation Selector-15 (text presentation)
+  0xFE0F, // Variation Selector-16 (emoji presentation)
+  0x20E3, // Combining Enclosing Keycap
+]);
+
 // Max allowed combining marks per base letter (covers Vietnamese ệ = e + ̣ + ̂).
 const MAX_COMBINING_MARKS_PER_LETTER = 2;
 
@@ -137,8 +146,18 @@ function cleanCombiningMarks(text: string): string {
   return text.replace(
     COMBINING_CLUSTER_REGEX,
     (_match, base: string, marks: string) => {
-      // Non-letter bases (., !, 1, …) should never carry combining marks.
-      if (!/\p{L}/u.test(base)) return base;
+      // Preserve emoji/symbol presentation marks on non-letter bases,
+      // but strip unrelated combining marks such as punctuation zalgo.
+      if (!/\p{L}/u.test(base)) {
+        let kept = "";
+        for (const mark of marks) {
+          const cp = mark.codePointAt(0)!;
+          if (ALLOWED_NON_LETTER_MARKS.has(cp)) {
+            kept += mark;
+          }
+        }
+        return base + kept;
+      }
 
       // Too many marks → zalgo: strip everything.
       const totalMarks = [...marks].length;
